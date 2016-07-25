@@ -98,8 +98,8 @@ void Adafruit_ILI9341::spiwrite(uint8_t c) {
       } else {
 	digitalWrite(_mosi, LOW); 
       }
-      digitalWrite(_sclk, HIGH);
-      digitalWrite(_sclk, LOW);
+//      digitalWrite(_sclk, HIGH);
+//      digitalWrite(_sclk, LOW);
     }
 #else
     // Fast SPI bitbang swiped from LPD8806 library
@@ -127,7 +127,7 @@ void Adafruit_ILI9341::writecommand(uint8_t c) {
   *csport &= ~cspinmask;
 #else
   digitalWrite(_dc, LOW);
-  digitalWrite(_sclk, LOW);
+//  digitalWrite(_sclk, LOW);
   digitalWrite(_cs, LOW);
 #endif
 
@@ -408,9 +408,13 @@ void Adafruit_ILI9341::pushColor(uint16_t color) {
   digitalWrite(_cs, LOW);
 #endif
 
+#if 1
+    SPIc::transfer(color >> 8);
+    SPIc::transfer(color);
+#else
   spiwrite(color >> 8);
   spiwrite(color);
-
+#endif
 #if defined(USE_FAST_PINIO)
   *csport |= cspinmask;
 #else
@@ -634,8 +638,8 @@ uint8_t Adafruit_ILI9341::spiread(void) {
   } else {
 
     for (uint8_t i=0; i<8; i++) {
-      digitalWrite(_sclk, LOW);
-      digitalWrite(_sclk, HIGH);
+//      digitalWrite(_sclk, LOW);
+//      digitalWrite(_sclk, HIGH);
       r <<= 1;
       if (digitalRead(_miso))
 	r |= 0x1;
@@ -666,7 +670,7 @@ uint8_t Adafruit_ILI9341::readcommand8(uint8_t c, uint8_t index) {
    digitalWrite(_cs, HIGH);
 
    digitalWrite(_dc, LOW);
-   digitalWrite(_sclk, LOW);
+//   digitalWrite(_sclk, LOW);
    digitalWrite(_cs, LOW);
    spiwrite(c);
  
