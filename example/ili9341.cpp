@@ -1,3 +1,4 @@
+
 /* ILI9341 demo (a boring one)
  *
  * This sample code is in the public domain.
@@ -15,6 +16,7 @@
 extern "C" {
   #include <ota-tftp.h>
   #include <cli.h>
+  #include "zlatni_rat.h"
 }
 
 #include "Adafruit_GFX.hpp"
@@ -28,108 +30,244 @@ extern "C" {
 
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
 
+#define delay_ms(ms) vTaskDelay(ms / portTICK_RATE_MS)
+
 extern "C" {
-/**************************************************************************/
-/*!
-    @brief  Converts a 24-bit RGB color to an equivalent 16-bit RGB565 value
 
-    @param[in]  r  8-bit red
-    @param[in]  g  8-bit green
-    @param[in]  b  8-bit blue
-
-    @section Example
-
-    @code 
-
-    // Get 16-bit equivalent of 24-bit color
-    uint16_t gray = drawRGB24toRGB565(0x33, 0x33, 0x33);
-
-    @endcode
-*/
-/**************************************************************************/
-uint16_t drawRGB24toRGB565(uint8_t r, uint8_t g, uint8_t b)
+// Convert a 24-bit RGB color to an equivalent 16-bit RGB565 value
+static __inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b)
 {
-  return ((r / 8) << 11) | ((g / 4) << 5) | (b / 8);
+//    return ((r / 8) << 11) | ((g / 4) << 5) | (b / 8);
+    return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
 }
+
+static __inline uint16_t read16(uint8_t *bmp, uint32_t *pos)
+{
+    uint16_t result;
+    ((uint8_t *)&result)[0] = bmp[(*pos)++];  // LSB
+    ((uint8_t *)&result)[1] = bmp[(*pos)++];  // MSB
+    return result;
+}
+
+static __inline uint32_t read32(uint8_t *bmp, uint32_t *pos)
+{
+    uint32_t result;
+    ((uint8_t *)&result)[0] = bmp[(*pos)++];  // LSB
+    ((uint8_t *)&result)[1] = bmp[(*pos)++];
+    ((uint8_t *)&result)[2] = bmp[(*pos)++];
+    ((uint8_t *)&result)[3] = bmp[(*pos)++];  // MSB
+    return result;
+}
+
+static void bmp_draw(uint8_t *bmp, uint16_t x, uint16_t y)
+{
+    uint32_t bmp_pos = 0;
+    int      bmp_width, bmp_height;   // W+H in pixels
+    uint8_t  bmp_depth;               // Bit depth (currently must be 24)
+    uint32_t img_offset;              // Start of image data in file
+    uint32_t row_size;                // Not always = bmp_width; may have padding
+    boolean  good_bmp = false;        // Set to true on valid header parse
+    boolean  flip    = true;          // BMP is stored bottom-to-top
+    int      w, h, row, col;
+    uint8_t  r, g, b;
+    uint32_t pos = 0;
+    uint32_t img_size;
+
+    if((x >= tft.width()) || (y >= tft.height())) return;
+
+
+    // Parse BMP header
+    if(read16(bmp, &bmp_pos) == 0x4D42) { // BMP signature
+        img_size = read32(bmp, &bmp_pos);
+        (void) read32(bmp, &bmp_pos); // Read & ignore creator bytes
+        img_offset = read32(bmp, &bmp_pos); // Start of image data
+        // Read DIB header
+        (void) read32(bmp, &bmp_pos); // Header size
+        bmp_width  = read32(bmp, &bmp_pos);
+        bmp_height = read32(bmp, &bmp_pos);
+        if(read16(bmp, &bmp_pos) == 1) { // # planes -- must be '1'
+            bmp_depth = read16(bmp, &bmp_pos); // bits per pixel
+            if((bmp_depth == 24) && (read32(bmp, &bmp_pos) == 0)) { // 0 = uncompressed
+                good_bmp = true; // Supported BMP format -- proceed!
+                printf("Image dimensions: %d x %d  %d bit  %d bytes\n", bmp_width, bmp_height, bmp_depth, img_size);
+                // BMP rows are padded (if needed) to 4-byte boundary
+                row_size = (bmp_width * 3 + 3) & ~3;
+
+                // If bmp_height is negative, image is in top-down order.
+                // This is not canon but has been observed in the wild.
+                if(bmp_height < 0) {
+                    bmp_height = -bmp_height;
+                    flip = false;
+                }
+
+                // Crop area to be loaded
+                w = bmp_width;
+                h = bmp_height;
+                if((x+w-1) >= tft.width())  w = tft.width()  - x;
+                if((y+h-1) >= tft.height()) h = tft.height() - y;
+
+                // Set TFT address window to clipped image bounds
+                tft.setAddrWindow(x, y, x+w-1, y+h-1);
+
+                gpio_write(TFT_DC, true); // @todo: should be done in setAddrWindow imho
+                gpio_write(TFT_CS, false);
+                for (row=0; row<h; row++) { // For each scanline...
+
+                    // Seek to start of scan line.  It might seem labor-
+                    // intensive to be doing this on every line, but this
+                    // method covers a lot of gritty details like cropping
+                    // and scanline padding.  Also, the seek only takes
+                    // place if the file position actually needs to change
+                    // (avoids a lot of cluster math in SD library).
+                    if(flip) // Bitmap is stored bottom-to-top order (normal BMP)
+                        pos = img_offset + (bmp_height - 1 - row) * row_size;
+                    else     // Bitmap is stored top-to-bottom
+                        pos = img_offset + row * row_size;
+                    for (col=0; col<w; col++) { // For each pixel...
+                        // Convert pixel from BMP to TFT format, push to display
+                        b = bmp[pos++];
+                        g = bmp[pos++];
+                        r = bmp[pos++];
+                        uint16_t temp = ((r / 8) << 11) | ((g / 4) << 5) | (b / 8);
+                        temp = temp >> 8 | temp << 8;
+                        (void) spi_transfer_16(1, temp); // Faster than tft.pushColor(rgb565(r,g,b));
+                    }
+                }
+                gpio_write(TFT_CS, true);
+            }
+        }
+    }
+
+    if(!good_bmp) {
+        printf("BMP format not recognized.\n");
+    }
+}
+
 
 void init_cmd(uint32_t argc, char *argv[])
 {
-  spi_init(1, (spi_mode_t) SPI_MODE0, SPI_FREQ_DIV_20M, true, SPI_LITTLE_ENDIAN, true);
+    uint8_t num_attemtps = 3;
+    uint8_t diag;
+    spi_init(1, (spi_mode_t) SPI_MODE0, SPI_FREQ_DIV_20M, true, SPI_LITTLE_ENDIAN, true);
 
-/*
-SPI_FREQ_DIV_2M   < 2MHz
-SPI_FREQ_DIV_4M   < 4MHz
-SPI_FREQ_DIV_8M   < 8MHz
-SPI_FREQ_DIV_10M  < 10MHz
-SPI_FREQ_DIV_20M  < 20MHz
-*/
+    /*
+    SPI_FREQ_DIV_2M   < 2MHz
+    SPI_FREQ_DIV_4M   < 4MHz
+    SPI_FREQ_DIV_8M   < 8MHz
+    SPI_FREQ_DIV_10M  < 10MHz
+    SPI_FREQ_DIV_20M  < 20MHz
+    */
 
-  gpio_enable(TFT_LED, GPIO_OUTPUT);
-  gpio_write(TFT_LED, false);
+    do {
+        tft.begin();
+        tft.setCursor(0, 0);
+        tft.setTextColor(ILI9341_WHITE);
+        diag = tft.readcommand8(ILI9341_RDSELFDIAG);
+        num_attemtps--;        
+    } while(diag != 0xc0 && num_attemtps); // Sometimes the tft init fails and diag reads 0
 
-  printf(" TFT begin\n");
-  tft.begin();
-  printf("     fillScreen\n");
-  tft.fillScreen(ILI9341_GREEN);
-  printf("     done\n");
+    if (diag != 0xc0) {
+        printf("Error! ILI9341 init failed.\n");
+    } else {
+        // Read diagnostics (optional but can help debug problems)
+        printf("Display Power Mode: 0x%02x\n", tft.readcommand8(ILI9341_RDMODE));
+        printf("MADCTL Mode:        0x%02x\n", tft.readcommand8(ILI9341_RDMADCTL));
+        printf("Pixel Format:       0x%02x\n", tft.readcommand8(ILI9341_RDPIXFMT));
+        printf("Image Format:       0x%02x\n", tft.readcommand8(ILI9341_RDIMGFMT));
+        printf("Self Diagnostic:    0x%02x\n", tft.readcommand8(ILI9341_RDSELFDIAG));
+    }
 }
 
-void fill_red_cmd(uint32_t argc, char *argv[])
+void draw_bmp_cmd(uint32_t argc, char *argv[])
 {
-  printf(" TFT fillScreen\n");
-  tft.fillScreen(ILI9341_RED);
-  printf("     done\n");
+    bmp_draw((uint8_t*) zlatni_rat_bmp, 0, 0);
 }
 
-void fill_green_cmd(uint32_t argc, char *argv[])
+void fill_cmd(uint32_t argc, char *argv[])
 {
-  printf(" TFT fillScreen\n");
-  tft.fillScreen(ILI9341_GREEN);
-  printf("     done\n");
+    char temp[3] = {0, 0, 0};
+    char *end;
+    uint8_t r, g, b;
+    if (strlen(argv[1]) != 7) {
+        printf("Express color as #rrggbb\n");
+    } else {
+        temp[0] = argv[1][1];
+        temp[1] = argv[1][2];
+        r = (uint8_t) strtoul((char*) &temp, &end, 16);
+        temp[0] = argv[1][3];
+        temp[1] = argv[1][4];
+        g = (uint8_t) strtoul((char*) &temp, &end, 16);
+        temp[0] = argv[1][5];
+        temp[1] = argv[1][6];
+        b = (uint8_t) strtoul((char*) &temp, &end, 16);
+        tft.fillScreen(rgb565(r, g, b));
+    }
 }
 
-void fill_blue_cmd(uint32_t argc, char *argv[])
+void text_cmd(uint32_t argc, char *argv[])
 {
-  printf(" TFT fillScreen\n");
-  tft.fillScreen(ILI9341_BLUE);
-  printf("     done\n");
+    if (argc == 1) {
+       tft.println((char*) "");
+    }
+    for (uint32_t i = 1; i < argc; i++) {
+        tft.print(argv[i]);
+        tft.print((char*) " ");
+    }
 }
 
- void on_cmd(uint32_t argc, char *argv[])
+void text_size_cmd(uint32_t argc, char *argv[])
 {
-  for (uint32_t i=1; i<argc; i++) {
-    uint32_t gpio = atoi(argv[i]);
-    printf(" Turning on GPIO %d\n", gpio);
-    gpio_enable(gpio, GPIO_OUTPUT);
-    gpio_write(gpio, true);
+    tft.setTextSize(atoi(argv[1]));
+}
 
-  }
+void cls_cmd(uint32_t argc, char *argv[])
+{
+    tft.fillScreen(ILI9341_BLACK);
+    tft.setCursor(0, 0);
+}
+
+void on_cmd(uint32_t argc, char *argv[])
+{
+    for (uint32_t i=1; i<argc; i++) {
+        uint32_t gpio = atoi(argv[i]);
+        printf(" Turning on GPIO %d\n", gpio);
+        gpio_enable(gpio, GPIO_OUTPUT);
+        gpio_write(gpio, true);
+    }
 }
 
 void off_cmd(uint32_t argc, char *argv[])
 {
-  for (uint32_t i=1; i<argc; i++) {
-    uint32_t gpio = atoi(argv[i]);
-    printf(" Turning off GPIO %d\n", gpio);
-    gpio_enable(gpio, GPIO_OUTPUT);
-    gpio_write(gpio, false);
-  }
+    for (uint32_t i=1; i<argc; i++) {
+        uint32_t gpio = atoi(argv[i]);
+        printf(" Turning off GPIO %d\n", gpio);
+        gpio_enable(gpio, GPIO_OUTPUT);
+        gpio_write(gpio, false);
+    }
 }
 
 void cli_task(void *pvParameters) {
-  const command_t cmds[] = {
-    { .cmd = "i",     .handler = &init_cmd,        .min_arg = 0, .max_arg = 0,   .help = "ILI9341 init", },
-    { .cmd = "r",     .handler = &fill_red_cmd,    .min_arg = 0, .max_arg = 0,   .help = "Fill screen with red", },
-    { .cmd = "g",     .handler = &fill_green_cmd,  .min_arg = 0, .max_arg = 0,   .help = "Fill screen with green", },
-    { .cmd = "b",     .handler = &fill_blue_cmd,   .min_arg = 0, .max_arg = 0,   .help = "Fill screen with blue", },
-    { .cmd = "on",    .handler = &on_cmd,          .min_arg = 1, .max_arg = 16,  .help = "Turn on one or more GPIOs",   .usage = "<gpio> [<gpio>]*", },
-    { .cmd = "off",   .handler = &off_cmd,         .min_arg = 1, .max_arg = 16,  .help = "Turn off one or more GPIOs",  .usage = "<gpio> [<gpio>]*", }
-  };
-  cli_run(cmds, sizeof(cmds) / sizeof(command_t), "the ILI9341 demo");
+    const command_t cmds[] = {
+        { .cmd = "init",  .handler = &init_cmd,        .min_arg = 0, .max_arg = 0,   .help = "ILI9341 init" },
+        { .cmd = "fill",  .handler = &fill_cmd,        .min_arg = 1, .max_arg = 1,   .help = "Fill screen with specified color", .usage = "#rrggbb" },
+        { .cmd = "bmp",   .handler = &draw_bmp_cmd,    .min_arg = 0, .max_arg = 0,   .help = "Draw BMP on screen" },
+        { .cmd = "cls",   .handler = &cls_cmd,         .min_arg = 0, .max_arg = 0,   .help = "Clear screen" },
+        { .cmd = "t",     .handler = &text_cmd,        .min_arg = 0, .max_arg = 16,  .help = "Draw text on screen. eg. 't Hello World!' or 't' for newline" },
+        { .cmd = "size",  .handler = &text_size_cmd,   .min_arg = 1, .max_arg = 11,  .help = "Set text size",  .usage = "<1...>" },
+        { .cmd = "on",    .handler = &on_cmd,          .min_arg = 1, .max_arg = 16,  .help = "Turn on one or more GPIOs", .usage = "<gpio> [<gpio>]*" },
+        { .cmd = "off",   .handler = &off_cmd,         .min_arg = 1, .max_arg = 16,  .help = "Turn off one or more GPIOs", .usage = "<gpio> [<gpio>]*" },
+    };
+    delay_ms(250); // Seem to run into problems it initing the TFT too soon
+    init_cmd(0, 0);
+    draw_bmp_cmd(0, 0);
+    gpio_write(TFT_LED, false);
+    cli_run(cmds, sizeof(cmds) / sizeof(command_t), "the ILI9341 demo");
 }
 
 void user_init(void)
 {
+    gpio_enable(TFT_LED, GPIO_OUTPUT);
+    gpio_write(TFT_LED, true);
     uart_set_baud(0, 115200);
 
 #ifndef CONFIG_NO_WIFI
