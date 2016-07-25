@@ -9,6 +9,7 @@
 #include <esp/uart.h> 
 #include <FreeRTOS.h>
 #include <task.h>
+#include <semphr.h>
 #include <esp8266.h>
 #include <esp/spi.h>
 #include <ssid_config.h>
@@ -28,6 +29,9 @@ extern "C" {
 #define TFT_DC 2
 #define TFT_LED 0
 
+#define ADC_BUTTON_PRESSED (1000) // adc > ADC_BUTTON_PRESSED when button pressed
+
+xSemaphoreHandle gTFTSemaphore;
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
 
 #define delay_ms(ms) vTaskDelay(ms / portTICK_RATE_MS)
@@ -76,6 +80,7 @@ static void bmp_draw(uint8_t *bmp, uint16_t x, uint16_t y)
     if((x >= tft.width()) || (y >= tft.height())) return;
 
 
+    xSemaphoreTake(gTFTSemaphore, portMAX_DELAY);
     // Parse BMP header
     if(read16(bmp, &bmp_pos) == 0x4D42) { // BMP signature
         img_size = read32(bmp, &bmp_pos);
@@ -141,6 +146,7 @@ static void bmp_draw(uint8_t *bmp, uint16_t x, uint16_t y)
     if(!good_bmp) {
         printf("BMP format not recognized.\n");
     }
+    xSemaphoreGive(gTFTSemaphore);
 }
 
 
@@ -158,6 +164,7 @@ void init_cmd(uint32_t argc, char *argv[])
     SPI_FREQ_DIV_20M  < 20MHz
     */
 
+    xSemaphoreTake(gTFTSemaphore, portMAX_DELAY);
     do {
         tft.begin();
         tft.setCursor(0, 0);
@@ -176,6 +183,7 @@ void init_cmd(uint32_t argc, char *argv[])
         printf("Image Format:       0x%02x\n", tft.readcommand8(ILI9341_RDIMGFMT));
         printf("Self Diagnostic:    0x%02x\n", tft.readcommand8(ILI9341_RDSELFDIAG));
     }
+    xSemaphoreGive(gTFTSemaphore);
 }
 
 void draw_bmp_cmd(uint32_t argc, char *argv[])
@@ -191,6 +199,7 @@ void fill_cmd(uint32_t argc, char *argv[])
     if (strlen(argv[1]) != 7) {
         printf("Express color as #rrggbb\n");
     } else {
+        xSemaphoreTake(gTFTSemaphore, portMAX_DELAY);
         temp[0] = argv[1][1];
         temp[1] = argv[1][2];
         r = (uint8_t) strtoul((char*) &temp, &end, 16);
@@ -201,11 +210,13 @@ void fill_cmd(uint32_t argc, char *argv[])
         temp[1] = argv[1][6];
         b = (uint8_t) strtoul((char*) &temp, &end, 16);
         tft.fillScreen(rgb565(r, g, b));
+        xSemaphoreGive(gTFTSemaphore);
     }
 }
 
 void text_cmd(uint32_t argc, char *argv[])
 {
+    xSemaphoreTake(gTFTSemaphore, portMAX_DELAY);
     if (argc == 1) {
        tft.println((char*) "");
     }
@@ -213,36 +224,74 @@ void text_cmd(uint32_t argc, char *argv[])
         tft.print(argv[i]);
         tft.print((char*) " ");
     }
+    xSemaphoreGive(gTFTSemaphore);
 }
 
 void text_size_cmd(uint32_t argc, char *argv[])
 {
+    xSemaphoreTake(gTFTSemaphore, portMAX_DELAY);
     tft.setTextSize(atoi(argv[1]));
+    xSemaphoreGive(gTFTSemaphore);
 }
 
 void cls_cmd(uint32_t argc, char *argv[])
 {
+    xSemaphoreTake(gTFTSemaphore, portMAX_DELAY);
     tft.fillScreen(ILI9341_BLACK);
     tft.setCursor(0, 0);
+    xSemaphoreGive(gTFTSemaphore);
 }
 
 void on_cmd(uint32_t argc, char *argv[])
 {
+    xSemaphoreTake(gTFTSemaphore, portMAX_DELAY);
     for (uint32_t i=1; i<argc; i++) {
         uint32_t gpio = atoi(argv[i]);
         printf(" Turning on GPIO %d\n", gpio);
         gpio_enable(gpio, GPIO_OUTPUT);
         gpio_write(gpio, true);
     }
+    xSemaphoreGive(gTFTSemaphore);
 }
 
 void off_cmd(uint32_t argc, char *argv[])
 {
+    xSemaphoreTake(gTFTSemaphore, portMAX_DELAY);
     for (uint32_t i=1; i<argc; i++) {
         uint32_t gpio = atoi(argv[i]);
         printf(" Turning off GPIO %d\n", gpio);
         gpio_enable(gpio, GPIO_OUTPUT);
         gpio_write(gpio, false);
+    }
+    xSemaphoreGive(gTFTSemaphore);
+}
+
+void button_task(void *pvParameters)
+{
+    struct ip_info ipconfig;
+    char msg[32];
+    while(1) {
+        while (sdk_system_adc_read() < ADC_BUTTON_PRESSED) {
+            delay(100);
+        }
+
+        if (!sdk_wifi_get_ip_info(STATION_IF, &ipconfig)) {
+            printf("Failed to read my own IP address...\r\n");
+            snprintf((char*) msg, sizeof(msg), "No IP");
+        } else {
+
+        }
+        snprintf((char*) msg, sizeof(msg), "%d.%d.%d.%d", ip4_addr1(&ipconfig), ip4_addr2(&ipconfig), ip4_addr3(&ipconfig), ip4_addr4(&ipconfig));
+        xSemaphoreTake(gTFTSemaphore, portMAX_DELAY);
+        tft.fillRect(0, 0, 320, 25, ILI9341_BLACK);
+        tft.setTextSize(2);
+        tft.setCursor(5, 5);
+        tft.print((char*) msg);
+        xSemaphoreGive(gTFTSemaphore);
+
+        while (sdk_system_adc_read() >= ADC_BUTTON_PRESSED) {
+            delay(250);
+        }
     }
 }
 
@@ -261,6 +310,7 @@ void cli_task(void *pvParameters) {
     init_cmd(0, 0);
     draw_bmp_cmd(0, 0);
     gpio_write(TFT_LED, false);
+    xTaskCreate(button_task, (signed char *)"button_task", 512, NULL, 2, NULL);
     cli_run(cmds, sizeof(cmds) / sizeof(command_t), "the ILI9341 demo");
 }
 
@@ -269,6 +319,7 @@ void user_init(void)
     gpio_enable(TFT_LED, GPIO_OUTPUT);
     gpio_write(TFT_LED, true);
     uart_set_baud(0, 115200);
+    vSemaphoreCreateBinary(gTFTSemaphore);
 
 #ifndef CONFIG_NO_WIFI
   // Wifi not necessary for the CLI demo but I use OTA for flashing
