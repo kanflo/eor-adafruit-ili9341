@@ -74,9 +74,9 @@ class Adafruit_GFX : public Print {
       int16_t *x1, int16_t *y1, uint16_t *w, uint16_t *h);
 
 #if ARDUINO >= 100
-  virtual size_t write(uint8_t);
+  virtual size_t writec(uint8_t);
 #else
-  virtual void   write(uint8_t);
+  virtual void   writec(uint8_t);
 #endif
 
   int16_t height(void) const;
