@@ -61,8 +61,11 @@ xSemaphoreHandle gTFTSemaphore;
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
 
 #define delay_ms(ms) vTaskDelay(ms / portTICK_RATE_MS)
+#define systime_ms() (xTaskGetTickCount()*portTICK_RATE_MS)
 
 extern "C" {
+
+static uint32_t start_time;
 
 // Convert a 24-bit RGB color to an equivalent 16-bit RGB565 value
 static __inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b)
@@ -420,7 +423,7 @@ err_t recv_callback(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
         // No data arrived indicating the client closed the connection and
         // sent us a packet with FIN flag set to 1 and we need to cleanup and
         // destroy our TCP connection.
-        printf("Connection closed by client.\n");
+        printf("Connection closed by client efter %dms.\n", systime_ms() - start_time);
         pbuf_free(p);
         xSemaphoreGive(gTFTSemaphore);
     }
@@ -433,6 +436,7 @@ err_t accept_callback(void *arg, struct tcp_pcb *pcb, err_t err)
     LWIP_UNUSED_ARG(arg);
     // Register receive callback function
     printf("TCP accept from %d.%d.%d.%d\n", ip4_addr1(&(pcb->remote_ip)),ip4_addr2(&(pcb->remote_ip)),ip4_addr3(&(pcb->remote_ip)),ip4_addr4(&(pcb->remote_ip)));
+    start_time = systime_ms();
     xSemaphoreTake(gTFTSemaphore, portMAX_DELAY);
     bmp_parser_reset(0, 0);
     tcp_recv(pcb, &recv_callback);
