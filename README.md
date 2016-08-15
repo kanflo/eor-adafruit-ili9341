@@ -23,6 +23,14 @@ cat sunset.bmp | nc -w1 <ip address> 80
 
 Or try ```help``` in the UART command line interface.
 
+Note that image upload using ```nc``` should take less than 1s. If it takes longer, try adding the following line to ```lwip/include/lwipopts.h``` and rebuild:
+
+```
+#define TCP_WND (TCP_MSS * 2)
+```
+
+See [EOR issue #151](https://github.com/SuperHouse/esp-open-rtos/issues/151) for further information.
+
 **Changes compared to the Adafruit master**
 
 The changes to the original Adafruit source files are
@@ -34,4 +42,3 @@ The changes to the original Adafruit source files are
 * Inclusion of eor_arduino_compat.hpp
 
 The ILI9341 and GFX libraries are copyright (c) 2013 Adafruit Industries. All rights reserved.
-
